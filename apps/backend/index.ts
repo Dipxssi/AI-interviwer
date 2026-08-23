@@ -5,6 +5,7 @@ import multer from "multer";
 import { extractResumeText } from "./services/resume-text";
 import { parseResumeWithLLM } from "./services/resume-parse-llm";
 import { CandidateProfile } from "./types";
+import { prisma } from "./db";
 
 const app = express();
 
@@ -78,8 +79,16 @@ app.post("/api/v1/pre-interview", upload.single("resume"), async (req, res) => {
       linkedin: { url: linkedin },
     });
 
+    const interview = await prisma.interview.create({
+      data:{
+        linkedinUrl: linkedin,
+        profile: profile,
+        status: "Pre",
+      }
+    })
+
     
-    res.json({ profile });
+    res.json({ profile, interviewId: interview.id });
 
   } catch (err) {
     console.error(err);

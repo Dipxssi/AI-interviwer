@@ -1,159 +1,238 @@
-# Turborepo starter
+# Interviwer
 
-This Turborepo starter is maintained by the Turborepo core team.
+An AI-powered voice interview platform inspired by Mercor. Candidates upload a resume, link their GitHub and LinkedIn profiles, and the system builds a rich candidate profile used to conduct a personalized voice interview.
 
-## Using this example
+## Status
 
-Run the following command:
+| Phase | Description | Status |
+|-------|-------------|--------|
+| 1 | Profile intake (resume, GitHub, LinkedIn) | Done |
+| 2 | Voice interview engine (STT → LLM → TTS) | Planned |
+| 3 | Evaluation, scoring, and results page | Planned |
+| 4 | Production polish (auth, deploy) | Planned |
 
-```sh
-npx create-turbo@latest
+## How it works
+
+```mermaid
+flowchart LR
+  subgraph frontend [Frontend — localhost:3000]
+    Form[Profile Form]
+    Interview[Voice Interview]
+    Result[Results]
+  end
+
+  subgraph backend [Backend — localhost:3001]
+    API[Express API]
+    LLM[Groq LLM]
+    PDF[PDF / DOCX Parser]
+  end
+
+  subgraph external [External Services]
+    GitHub[GitHub API]
+    Groq[Groq API]
+  end
+
+  subgraph data [Data]
+    PG[(PostgreSQL)]
+  end
+
+  Form -->|multipart upload| API
+  API --> PDF
+  PDF --> LLM
+  API --> GitHub
+  LLM --> Groq
+  API --> PG
+  Form --> Interview
+  Interview --> Result
 ```
 
-## What's inside?
+### Profile intake flow
 
-This Turborepo includes the following packages/apps:
+1. Candidate submits LinkedIn URL, GitHub URL, and a resume (PDF or DOCX).
+2. Backend extracts raw text from the resume.
+3. Groq LLM parses structured fields (name, skills, experience, education).
+4. GitHub API enriches the profile with bio, languages, and notable repos.
+5. Everything is merged into a `CandidateProfile` and saved to Postgres.
+6. Frontend navigates to the interview page with the profile in context.
 
-### Apps and Packages
+## Tech stack
 
-- `docs`: a [Next.js](https://nextjs.org/) app
-- `web`: another [Next.js](https://nextjs.org/) app
-- `@repo/ui`: a stub React component library shared by both `web` and `docs` applications
-- `@repo/eslint-config`: `eslint` configurations (includes `eslint-config-next` and `eslint-config-prettier`)
-- `@repo/typescript-config`: `tsconfig.json`s used throughout the monorepo
+| Layer | Technologies |
+|-------|--------------|
+| Monorepo | Turborepo, Bun workspaces |
+| Frontend | React 19, React Router, Tailwind CSS, shadcn/ui, Axios |
+| Backend | Express, Bun, Multer, Zod |
+| Database | PostgreSQL 16, Prisma 7 (driver adapter + `@prisma/adapter-pg`) |
+| AI | Groq (`openai/gpt-oss-20b`) for resume parsing |
+| Resume parsing | `pdf-parse`, `mammoth` (DOCX) |
 
-Each package/app is 100% [TypeScript](https://www.typescriptlang.org/).
+## Project structure
 
-### Utilities
-
-This Turborepo has some additional tools already setup for you:
-
-- [TypeScript](https://www.typescriptlang.org/) for static type checking
-- [ESLint](https://eslint.org/) for code linting
-- [Prettier](https://prettier.io) for code formatting
-
-### Build
-
-To build all apps and packages, run the following command:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
-
-```sh
-cd my-turborepo
-turbo build
+```
+interviwer/
+├── apps/
+│   ├── frontend/          # React app (port 3000)
+│   │   └── src/
+│   │       ├── components/   # Form, Interview, Result
+│   │       ├── context/      # ProfileContext (shared session state)
+│   │       └── types/        # CandidateProfile types
+│   └── backend/           # Express API (port 3001)
+│       ├── index.ts          # API routes
+│       ├── db.ts             # Prisma client setup
+│       ├── types.ts          # Zod schemas
+│       ├── services/         # resume-text, resume-parse-llm
+│       └── prisma/           # schema + migrations
+├── docker-compose.yml     # Local Postgres
+└── turbo.json
 ```
 
-Without global `turbo`, use your package manager:
+## Prerequisites
 
-```sh
-cd my-turborepo
-npx turbo build
-bun dlx turbo build
-bun exec turbo build
+- [Bun](https://bun.sh) 1.4+
+- [Docker](https://www.docker.com/) (for local Postgres)
+- [Groq API key](https://console.groq.com/)
+
+## Getting started
+
+### 1. Clone and install
+
+```bash
+git clone <your-repo-url>
+cd interviwer
+bun install
 ```
 
-You can build a specific package by using a [filter](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters):
+### 2. Start the database
 
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
-
-```sh
-turbo build --filter=docs
+```bash
+docker compose up -d
 ```
 
-Without global `turbo`:
+Postgres runs on **host port 5434** (mapped to container port 5432).
 
-```sh
-npx turbo build --filter=docs
-bun exec turbo build --filter=docs
-bun exec turbo build --filter=docs
+### 3. Configure environment
+
+Create `apps/backend/.env`:
+
+```env
+DATABASE_URL=postgresql://interviwer:interviwer@localhost:5434/interviwer?schema=public
+GROQ_API_KEY=your_groq_api_key_here
 ```
 
-### Develop
+> Never commit `.env`. A committed `.env.example` with placeholder values is recommended for collaborators.
 
-To develop all apps and packages, run the following command:
+### 4. Run database migrations
 
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
-
-```sh
-cd my-turborepo
-turbo dev
+```bash
+cd apps/backend
+bunx prisma migrate deploy
+bunx prisma generate
 ```
 
-Without global `turbo`, use your package manager:
+Run `bunx prisma generate` whenever you change `schema.prisma`.
 
-```sh
-cd my-turborepo
-npx turbo dev
-bun exec turbo dev
-bun exec turbo dev
+### 5. Start the apps
+
+**Option A — both apps via Turborepo (from repo root):**
+
+```bash
+bun run dev
 ```
 
-You can develop a specific package by using a [filter](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters):
+**Option B — separately:**
 
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
+```bash
+# Terminal 1 — backend
+cd apps/backend
+bun index.ts
 
-```sh
-turbo dev --filter=web
+# Terminal 2 — frontend
+cd apps/frontend
+bun run dev
 ```
 
-Without global `turbo`:
+| Service | URL |
+|---------|-----|
+| Frontend | http://localhost:3000 |
+| Backend API | http://localhost:3001 |
 
-```sh
-npx turbo dev --filter=web
-bun exec turbo dev --filter=web
-bun exec turbo dev --filter=web
+## API
+
+### `POST /api/v1/pre-interview`
+
+Creates a candidate profile and interview session.
+
+**Content-Type:** `multipart/form-data`
+
+| Field | Type | Required |
+|-------|------|----------|
+| `linkedin` | string (URL) | Yes |
+| `github` | string (URL) | Yes |
+| `resume` | file (PDF or DOCX) | Yes |
+
+**Response:**
+
+```json
+{
+  "profile": { "name": "...", "skills": [], "github": {}, "linkedin": {} },
+  "interviewId": "uuid"
+}
 ```
 
-### Remote Caching
+## Database schema
 
-> [!TIP]
-> Vercel Remote Cache is free for all plans. Get started today at [vercel.com](https://vercel.com/signup?utm_source=remote-cache-sdk&utm_campaign=free_remote_cache).
+```prisma
+Interview {
+  id          String   @id @default(uuid())
+  linkedinUrl String
+  profile     Json     // merged CandidateProfile
+  status      InterviewStatus  // Pre | Inprogress | Done
+  score       Int      @default(0)
+  conversation Message[]
+}
 
-Turborepo can use a technique known as [Remote Caching](https://turborepo.dev/docs/core-concepts/remote-caching) to share cache artifacts across machines, enabling you to share build caches with your team and CI/CD pipelines.
-
-By default, Turborepo will cache locally. To enable Remote Caching you will need an account with Vercel. If you don't have an account you can [create one](https://vercel.com/signup?utm_source=turborepo-examples), then enter the following commands:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
-
-```sh
-cd my-turborepo
-turbo login
+Message {
+  id          String   @id @default(uuid())
+  message     String
+  type        MessageType  // USER | ASSISTANT
+  interviewId String
+}
 ```
 
-Without global `turbo`, use your package manager:
+Inspect data locally:
 
-```sh
-cd my-turborepo
-npx turbo login
-bun exec turbo login
-bun exec turbo login
+```bash
+cd apps/backend
+bunx prisma studio
 ```
 
-This will authenticate the Turborepo CLI with your [Vercel account](https://vercel.com/docs/concepts/personal-accounts/overview).
+## Frontend routes
 
-Next, you can link your Turborepo to your Remote Cache by running the following command from the root of your Turborepo:
+| Route | Page | Description |
+|-------|------|-------------|
+| `/` | Form | Upload resume, enter LinkedIn & GitHub URLs |
+| `/interview` | Interview | Voice interview session (in progress) |
+| `/result` | Result | Final score and feedback (planned) |
 
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
+Session data (`profile`, `interviewId`) is shared across routes via `ProfileContext`.
 
-```sh
-turbo link
-```
+## Git — what to commit vs ignore
 
-Without global `turbo`:
+| Commit | Ignore |
+|--------|--------|
+| `prisma/schema.prisma` | `.env` |
+| `prisma/migrations/` | `apps/backend/generated/prisma/` |
+| `docker-compose.yml` | `node_modules/` |
 
-```sh
-npx turbo link
-bun exec turbo link
-bun exec turbo link
-```
+## Roadmap
 
-## Useful Links
+- [ ] Voice interview engine — STT, TTS, question loop
+- [ ] `POST /interview/start` and `POST /interview/answer` endpoints
+- [ ] Save conversation as `Message` rows
+- [ ] AI evaluation and scoring
+- [ ] Results page with feedback
+- [ ] `/interview/:id` route with refresh support
 
-Learn more about the power of Turborepo:
+## License
 
-- [Tasks](https://turborepo.dev/docs/crafting-your-repository/running-tasks)
-- [Caching](https://turborepo.dev/docs/crafting-your-repository/caching)
-- [Remote Caching](https://turborepo.dev/docs/core-concepts/remote-caching)
-- [Filtering](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters)
-- [Configuration Options](https://turborepo.dev/docs/reference/configuration)
-- [CLI Usage](https://turborepo.dev/docs/reference/command-line-reference)
+Private — all rights reserved.

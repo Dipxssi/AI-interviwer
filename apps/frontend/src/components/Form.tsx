@@ -6,17 +6,24 @@ import { toast } from "sonner";
 import { BACKEND_URL } from "../lib/config";
 import axios from "axios";
 import type { CandidateProfile } from "@/types/profile";
+import { useProfile } from "@/context/ProfileContext";
+import { useNavigate } from "react-router-dom";
+import { Loader2 } from "lucide-react";
 
 
 
 
-export function Form({ onSuccess }: { onSuccess: (profile: CandidateProfile) => void }) {
+export function Form() {
 
+    const navigate = useNavigate();
+    const {setProfileData} = useProfile();
     const [github, setGithub] = useState("");
     const [linkedin, setLinkedin] = useState("");
     const [resume, setResume] = useState<File | null>(null);
+    const [isLoading, setIsLoading] = useState(false);
 
     async function onSubmit() {
+        setIsLoading(true);
         if (!github || !linkedin || !resume){
             toast.error("Please fill all the fields");
             return;
@@ -32,9 +39,12 @@ export function Form({ onSuccess }: { onSuccess: (profile: CandidateProfile) => 
             `${BACKEND_URL}/api/v1/pre-interview`,
              formData
         );
-        onSuccess(res.data.profile);    
+        setProfileData(res.data.profile, res.data.interviewId);
+        navigate("/interview");  
         } catch (error) {
             toast.error("Error submitting form");
+        } finally {
+            setIsLoading(false);
         }
     }
 
@@ -54,7 +64,7 @@ export function Form({ onSuccess }: { onSuccess: (profile: CandidateProfile) => 
                 <Input type="file" onChange={e => setResume(e.target.files?.[0] ?? null)}/>
             </div>
             <div className="flex justify-center">
-                <Button onClick={onSubmit}>Start Interview</Button>
+                <Button onClick={onSubmit} disabled={isLoading}>{isLoading ? "Submitting..." : "Start Interview"}   {isLoading && <Loader2 className="w-4 h-4 ml-2 animate-spin" />}</Button>
             </div>
         </div >
     </div >

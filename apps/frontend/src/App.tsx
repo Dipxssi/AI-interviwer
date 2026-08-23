@@ -5,21 +5,22 @@ import { Result } from "./components/Result";
 import { useState } from "react";
 import { Toaster } from "sonner";
 import type { CandidateProfile } from "@/types/profile";
+import {BrowserRouter, Routes , Route} from "react-router-dom";
+import { ProfileProvider } from "./context/ProfileContext";
 
 export function App() {
-  const [page , setPage] = useState<"form" | "interview" | "result">("form"); 
-  const [profile, setProfile] = useState<CandidateProfile | null>(null);
+  
 
   return (
-    <div>
-    {page === "form" && (
-        <Form onSuccess={(p) => { setProfile(p); setPage("interview"); }} />
-      )}
-      {page === "interview" && <Interview profile={profile} />}
-      {page === "result" && <Result />}
-    
-    <Toaster position="top-center" />
-    </div>
+    <ProfileProvider>
+      <BrowserRouter>
+      <Routes>
+      <Route path="/" element={<Form />} />
+          <Route path="/interview" element={<Interview />} />
+          <Route path="/result" element={<Result />} />
+        </Routes></BrowserRouter>
+    </ProfileProvider>
+   
   );
 }
 
