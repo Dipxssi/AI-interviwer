@@ -28,12 +28,56 @@ model Message{
   type          MessageType
   interviewId   String
   interview     Interview  @relation(fields: [interviewId], references:[id])
+
+  startedAt     DateTime?
+  endedAt       DateTime?
+  confidence    Float?
+  metadata      Json?
+  createdAt     DateTime @default(now())
+  events        RealtimeEvent[]
+}
+
+model RealtimeEvent{
+ id              String            @id @default(uuid())
+ interviewId     String 
+ messageId       String 
+ type            RealtimeEventType
+ timestamp       DateTime
+ payload         Json?
+
+  message       Message?  @relation(fields: [messageId], references:[id])
+  @@index([interviewId, timestamp])
+}
+
+model InterviewStateSnapshot{
+  id              String            @id @default(uuid())
+  interviewId     String
+  version         Int
+  state           Json
+  createdAt       DateTime @default(now())
+
+  @@unique([interviewId, version])
 }
 
 enum MessageType{
    USER
    ASSISTANT
+   SYSTEM
 }
+
+enum RealtimeEventType{
+  AUDIO_STARTED
+  AUDIO_ENDED
+  FINAL_TRANSCRIPT
+  ENDPOINT_CONFIRMED
+  LLM_STARTED
+  LLM_FIRST_TOKEN
+  TTS_STARTED
+  TTS_FIRST_AUDIO
+  ASSISTANT_INTERRUPTED
+  INTERVIEW_DECISION
+}
+
 
 enum  InterviewStatus {
   Pre 

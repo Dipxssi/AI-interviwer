@@ -11,7 +11,10 @@ export const Experience = z.object({
   export const Education = z.object({
     institution: z.string(),
     degree: z.string().nullable(),     
-    year: z.string().nullable(),
+    year:z
+    .union([z.string(), z.number()])
+    .nullable()
+    .transform((v) => (v == null ? null : String(v))),
   });
   
   export const ParsedResume = z.object({
