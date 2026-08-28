@@ -105,27 +105,39 @@ export function attachVoiceGateway(server: Server): void {
 
       asr = new DeepgramLiveAsr({
         onPartial: (text) => {
+          const trimmed = text.trim();
+          if (trimmed.length < 3) return;
+
           if (session.state === "LISTENING") {
             session.transition("CANDIDATE_SPEAKING");
           }
-          session.setPartialTranscript(text);
+          session.setPartialTranscript(trimmed);
         },
         onFinal: (text) => {
           const trimmed = text.trim();
           if (trimmed.length < 3) return;
-        
+
+          // Recover if a previous turn died mid-flight
+          if (
+            (session.state === "PROCESSING" ||
+              session.state === "AI_SPEAKING") &&
+            !turnInFlight.has(interviewId)
+          ) {
+            session.transition("LISTENING");
+          }
+
           if (
             session.state !== "LISTENING" &&
             session.state !== "CANDIDATE_SPEAKING"
           ) {
             return;
           }
-        
+
           if (turnInFlight.has(interviewId)) return;
           turnInFlight.add(interviewId);
-        
+
           session.onFinalTranscript(trimmed);
-        
+
           void runInterviewTurn({
             interviewId,
             profile,
@@ -200,13 +212,7 @@ export function attachVoiceGateway(server: Server): void {
             : Buffer.from(data as ArrayBuffer);
 
           if (buf.byteLength === 0) return;
-
-          if (
-            session.state === "LISTENING" ||
-            session.state === "CANDIDATE_SPEAKING"
-          ) {
-            asr?.sendPcm(buf);
-          }
+          asr?.sendPcm(buf);
           return;
         }
 
@@ -216,6 +222,9 @@ export function attachVoiceGateway(server: Server): void {
             if (parsed.type === "AUDIO_PLAYBACK_DONE") {
               session.onPlaybackFinished();
               return;
+            }
+            if (parsed.type === "BARGE_IN") {
+              turnInFlight.delete(interviewId);
             }
             session.handleClientMessage(parsed);
             return;

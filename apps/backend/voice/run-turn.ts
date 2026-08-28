@@ -3,6 +3,8 @@ import type { CandidateProfile } from "../types";
 import { generateTurn } from "../interview-engine/generate-turn";
 import { synthesizeSpeech } from "../services/tts-deepgram";
 import type { InterviewSession } from "./session";
+import { splitIntoSentences } from "./split-sentences";
+import { logEvent } from "./event";
 
 type RunTurnArgs = {
   interviewId: string;
@@ -56,16 +58,17 @@ export async function runInterviewTurn({
   }
 
   if (!isOpening) {
-    await prisma.message.create({
+    const userMsg = await prisma.message.create({
       data: {
         interviewId,
         type: "USER",
         message: text,
       },
     });
+    await logEvent(interviewId, userMsg.id, "FINAL_TRANSCRIPT");
   }
 
-  await prisma.message.create({
+  const assistantMsg = await prisma.message.create({
     data: {
       interviewId,
       type: "ASSISTANT",
@@ -73,6 +76,8 @@ export async function runInterviewTurn({
       metadata: result.decision,
     },
   });
+
+  await logEvent(interviewId, assistantMsg.id, "LLM_STARTED");
 
   const latestSnapshot = await prisma.interviewStateSnapshot.findFirst({
     where: { interviewId },
@@ -103,17 +108,29 @@ export async function runInterviewTurn({
     });
   }
 
-  session.setInterviewState(result.nextState);
-  session.transition("AI_SPEAKING");
-  
-  const ttsAbort = session.beginTts();
-  const audio = await synthesizeSpeech(result.spoken_response);
-  
-  if (signal?.aborted || ttsAbort.signal.aborted) {
+  if (signal?.aborted || llmAbort.signal.aborted) {
     return;
   }
-  
+
+  session.setInterviewState(result.nextState);
+  session.transition("AI_SPEAKING");
+
+  const ttsAbort = session.beginTts();
+  await logEvent(interviewId, assistantMsg.id, "TTS_STARTED");
+  const sentences = splitIntoSentences(result.spoken_response);
+  let firstChunk = true;
+
+  for (const sentence of sentences) {
+    if (ttsAbort.signal.aborted || llmAbort.signal.aborted) return;
+    if (!firstChunk) {
+      session.nextTtsSequence();
+    }
+    firstChunk = false;
+    const audio = await synthesizeSpeech(sentence);
+    if (ttsAbort.signal.aborted) return;
+    sendBinary(audio);
+  }
+
   session.emitAssistantText(result.spoken_response);
-  sendBinary(audio);
   session.onAssistantAudioSent();
 }

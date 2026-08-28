@@ -42,6 +42,24 @@ body::before {
   }
 }
 
+@keyframes voice-vibrate {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  25% {
+    transform: scale(1.06) translateX(-1px);
+  }
+  75% {
+    transform: scale(1.06) translateX(1px);
+  }
+}
+
+.voice-avatar-active {
+  animation: voice-vibrate 0.45s ease-in-out infinite;
+  box-shadow: 0 0 0 3px color-mix(in oklab, currentColor 25%, transparent);
+}
+
 @media (prefers-reduced-motion) {
   *,
   ::before,

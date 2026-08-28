@@ -79,12 +79,43 @@ export function useVoiceInterview(interviewId: string | null) {
   const audioMimeRef = useRef("audio/mpeg");
   const pcmChunksSentRef = useRef(0);
 
+  const audioQueueRef = useRef<ArrayBuffer[]>([]);
+  const isPlayingRef = useRef(false);
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const currentObjectUrlRef = useRef<string | null>(null);
+
+  const speechMsRef = useRef(0);
+  const bargeSentRef = useRef(false);
+  const playbackAbortedRef = useRef(false);
+
   function setState(next: VoiceState) {
     voiceStateRef.current = next;
     setVoiceState(next);
   }
 
+  function stopPlayback() {
+    playbackAbortedRef.current = true;
+    audioQueueRef.current = [];
+
+    const audio = currentAudioRef.current;
+    if (audio) {
+      audio.onended = null;
+      audio.onerror = null;
+      audio.pause();
+      audio.src = "";
+      currentAudioRef.current = null;
+    }
+
+    if (currentObjectUrlRef.current) {
+      URL.revokeObjectURL(currentObjectUrlRef.current);
+      currentObjectUrlRef.current = null;
+    }
+
+    isPlayingRef.current = false;
+  }
+
   function cleanup() {
+    stopPlayback();
     processorRef.current?.disconnect();
     processorRef.current = null;
     streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -105,34 +136,72 @@ export function useVoiceInterview(interviewId: string | null) {
     }
   }
 
-  async function playMp3(bytes: ArrayBuffer): Promise<void> {
+  async function playOneMp3(bytes: ArrayBuffer): Promise<void> {
+    if (playbackAbortedRef.current) return;
+
     const blob = new Blob([bytes], { type: audioMimeRef.current });
     const url = URL.createObjectURL(blob);
+    currentObjectUrlRef.current = url;
+
     const audio = new Audio(url);
-  
+    currentAudioRef.current = audio;
+
     setState("AI_SPEAKING");
     setStatus("Interviewer speaking…");
-  
+
     try {
       await new Promise<void>((resolve, reject) => {
         audio.onended = () => {
           URL.revokeObjectURL(url);
+          if (currentObjectUrlRef.current === url) {
+            currentObjectUrlRef.current = null;
+          }
+          currentAudioRef.current = null;
           resolve();
         };
         audio.onerror = () => {
           URL.revokeObjectURL(url);
+          if (currentObjectUrlRef.current === url) {
+            currentObjectUrlRef.current = null;
+          }
+          currentAudioRef.current = null;
           reject(new Error("Audio playback failed"));
         };
         void audio.play().catch(reject);
       });
     } catch {
-      setError("Audio blocked — click anywhere on the page, then refresh");
-      return;
+      if (!playbackAbortedRef.current) {
+        setError("Audio blocked — click anywhere on the page, then refresh");
+      }
     }
-  
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
+  }
+
+  async function drainAudioQueue(): Promise<void> {
+    if (isPlayingRef.current) return;
+    isPlayingRef.current = true;
+
+    while (audioQueueRef.current.length > 0) {
+      if (playbackAbortedRef.current) break;
+      const bytes = audioQueueRef.current.shift()!;
+      await playOneMp3(bytes);
+      if (playbackAbortedRef.current) break;
+    }
+
+    isPlayingRef.current = false;
+
+    if (
+      !playbackAbortedRef.current &&
+      wsRef.current?.readyState === WebSocket.OPEN &&
+      voiceStateRef.current !== "ENDING"
+    ) {
       wsRef.current.send(JSON.stringify({ type: "AUDIO_PLAYBACK_DONE" }));
     }
+  }
+
+  function enqueueMp3(bytes: ArrayBuffer) {
+    if (playbackAbortedRef.current) return;
+    audioQueueRef.current.push(bytes);
+    void drainAudioQueue();
   }
 
   useEffect(() => {
@@ -149,7 +218,10 @@ export function useVoiceInterview(interviewId: string | null) {
           break;
         case "STATE_CHANGED":
           setState(event.state);
-          if (event.state === "LISTENING") setStatus("Your turn — speak naturally");
+          if (event.state === "LISTENING") {
+            setStatus("Your turn — speak naturally");
+            bargeSentRef.current = false;
+          }
           if (event.state === "AI_SPEAKING") setStatus("Interviewer speaking…");
           if (event.state === "PROCESSING") setStatus("Thinking…");
           if (event.state === "CANDIDATE_SPEAKING") setStatus("Listening to you…");
@@ -166,6 +238,13 @@ export function useVoiceInterview(interviewId: string | null) {
           break;
         case "TTS_AUDIO_START":
           audioMimeRef.current = event.mimeType || "audio/mpeg";
+          playbackAbortedRef.current = false;
+          break;
+        case "CANDIDATE_INTERRUPTED":
+          stopPlayback();
+          setAssistantText("");
+          setState("CANDIDATE_SPEAKING");
+          setStatus("Go ahead…");
           break;
         case "INTERVIEW_ENDED":
           setState("ENDING");
@@ -204,7 +283,6 @@ export function useVoiceInterview(interviewId: string | null) {
       const processor = audioCtx.createScriptProcessor(4096, 1, 1);
       processorRef.current = processor;
 
-      // Silent output — keeps processor alive without speaker feedback
       const silent = audioCtx.createGain();
       silent.gain.value = 0;
 
@@ -214,6 +292,33 @@ export function useVoiceInterview(interviewId: string | null) {
         if (!socket || socket.readyState !== WebSocket.OPEN || !ctx) return;
 
         const input = e.inputBuffer.getChannelData(0);
+        const state = voiceStateRef.current;
+
+        if (state === "AI_SPEAKING" || state === "PROCESSING") {
+          let sum = 0;
+          for (let i = 0; i < input.length; i++) sum += input[i]! * input[i]!;
+          const rms = Math.sqrt(sum / input.length);
+          const frameMs = (input.length / ctx.sampleRate) * 1000;
+
+          if (rms > 0.02) {
+            speechMsRef.current += frameMs;
+          } else {
+            speechMsRef.current = 0;
+          }
+
+          if (speechMsRef.current >= 180 && !bargeSentRef.current) {
+            bargeSentRef.current = true;
+            stopPlayback();
+            setAssistantText("");
+            setState("CANDIDATE_SPEAKING");
+            setStatus("Go ahead…");
+            socket.send(JSON.stringify({ type: "BARGE_IN" }));
+          }
+        } else {
+          speechMsRef.current = 0;
+          bargeSentRef.current = false;
+        }
+
         const pcm16k = downsampleTo16k(input, ctx.sampleRate);
         socket.send(floatTo16BitPCM(pcm16k));
         pcmChunksSentRef.current += 1;
@@ -244,7 +349,7 @@ export function useVoiceInterview(interviewId: string | null) {
             }
             return;
           }
-          void playMp3(msg.data as ArrayBuffer);
+          enqueueMp3(msg.data as ArrayBuffer);
         };
 
         ws.onerror = () => setError("WebSocket error");
