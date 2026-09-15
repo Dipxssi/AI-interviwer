@@ -31,16 +31,28 @@ function buildDeepgramListenUrl(): string {
     interim_results: "true",
     smart_format: "true",
     punctuate: "true",
-    endpointing: "300", 
+    // Longer silence so thinking pauses mid-answer don't cut the turn.
+    endpointing: "1400",
+    // True end-of-utterance backup (must be > endpointing).
+    utterance_end_ms: "2200",
   });
 
   return `wss://api.deepgram.com/v1/listen?${params.toString()}`;
+}
+
+/** Prefer waiting through mid-thought pauses unless the sentence looks finished. */
+function looksLikeFinishedUtterance(text: string): boolean {
+  const t = text.trim();
+  if (t.length < 24) return false;
+  return /[.!?…]["')\]]?\s*$/.test(t);
 }
 
 export class DeepgramLiveAsr {
   private ws: WebSocket | null = null;
   private keepAliveTimer: ReturnType<typeof setInterval> | null = null;
   private readonly callbacks: LiveAsrCallbacks;
+  /** Concatenate every is_final segment until speech_final / UtteranceEnd. */
+  private finalParts: string[] = [];
 
   constructor(callbacks: LiveAsrCallbacks) {
     this.callbacks = callbacks;
@@ -97,8 +109,14 @@ export class DeepgramLiveAsr {
     this.ws!.send(chunk);
   }
 
+  /** Drop in-progress utterance (barge-in / turn reset). */
+  resetUtterance(): void {
+    this.finalParts = [];
+  }
+
   close(): void {
     this.stopKeepAlive();
+    this.resetUtterance();
 
     if (!this.ws) return;
 
@@ -112,6 +130,13 @@ export class DeepgramLiveAsr {
     this.ws = null;
   }
 
+  private flushFinal(): void {
+    const text = this.finalParts.join(" ").replace(/\s+/g, " ").trim();
+    this.finalParts = [];
+    if (!text) return;
+    this.callbacks.onFinal(text);
+  }
+
   private handleMessage(raw: string): void {
     let msg: DeepgramLiveMessage;
     try {
@@ -119,21 +144,46 @@ export class DeepgramLiveAsr {
     } catch {
       return;
     }
-  
-    if (msg.type !== "Results") return;
-  
-    const transcript = msg.channel?.alternatives?.[0]?.transcript?.trim() ?? "";
-    if (!transcript) return;
-  
-    // Only trigger a turn when the user actually stopped speaking
-    if (msg.speech_final) {
-      this.callbacks.onFinal(transcript);
+
+    // Backup end-of-turn when VAD never marks speech_final (noise/echo).
+    if (msg.type === "UtteranceEnd") {
+      if (this.finalParts.length > 0) {
+        this.flushFinal();
+      }
       return;
     }
-  
-    // Live text while speaking
-    if (!msg.is_final) {
-      this.callbacks.onPartial(transcript);
+
+    if (msg.type !== "Results") return;
+
+    const transcript = msg.channel?.alternatives?.[0]?.transcript?.trim() ?? "";
+
+    // Empty Results can still carry speech_final — flush buffered finals.
+    if (!transcript) {
+      if (msg.speech_final && this.finalParts.length > 0) {
+        const buffered = this.finalParts.join(" ").trim();
+        // Incomplete thought: wait for UtteranceEnd instead of cutting mid-answer.
+        if (looksLikeFinishedUtterance(buffered)) {
+          this.flushFinal();
+        }
+      }
+      return;
+    }
+
+    if (msg.is_final) {
+      this.finalParts.push(transcript);
+      this.callbacks.onPartial(this.finalParts.join(" "));
+    } else {
+      const live = [...this.finalParts, transcript].join(" ").trim();
+      this.callbacks.onPartial(live);
+    }
+
+    if (msg.speech_final) {
+      const buffered = this.finalParts.join(" ").trim();
+      // Don't end the candidate turn on a short thinking pause.
+      // UtteranceEnd (~2.2s quiet) still commits incomplete sentences.
+      if (looksLikeFinishedUtterance(buffered)) {
+        this.flushFinal();
+      }
     }
   }
 

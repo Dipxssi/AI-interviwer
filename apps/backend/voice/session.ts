@@ -21,6 +21,7 @@ export class InterviewSession {
   readonly interviewId: string;
   private data: InterviewSessionData;
   private readonly emit: EmitFn;
+  private finalScore = 0;
 
   constructor(args: CreateSessionArgs) {
     this.interviewId = args.interviewId;
@@ -53,11 +54,13 @@ export class InterviewSession {
     return this.data.partialTranscript;
   }
 
+  get score(): number {
+    return this.finalScore;
+  }
 
   snapshot(): Readonly<InterviewSessionData> {
     return this.data;
   }
-
 
   start(): void {
     this.transition("LISTENING");
@@ -83,6 +86,9 @@ export class InterviewSession {
     this.data.interviewState = state;
   }
 
+  setFinalScore(score: number): void {
+    this.finalScore = score;
+  }
 
   beginLlm(): AbortController {
     this.data.abortLlm?.abort();
@@ -92,7 +98,6 @@ export class InterviewSession {
     return controller;
   }
 
-
   beginTts(): AbortController {
     this.data.abortTts?.abort();
     const controller = new AbortController();
@@ -101,7 +106,7 @@ export class InterviewSession {
     this.emit({
       type: "TTS_AUDIO_START",
       sequence: this.data.ttsSequence,
-      mimeType: "audio/mpeg", 
+      mimeType: "audio/mpeg",
     });
     return controller;
   }
@@ -142,7 +147,6 @@ export class InterviewSession {
     }
   }
 
- 
   onFinalTranscript(text: string): void {
     this.data.partialTranscript = text;
     this.emit({ type: "FINAL_TRANSCRIPT", text });
@@ -151,13 +155,16 @@ export class InterviewSession {
 
   onAssistantAudioSent(): void {
     this.emit({ type: "ASSISTANT_FINISHED" });
-    // stay AI_SPEAKING until browser finishes playback
   }
-  
+
   onPlaybackFinished(): void {
     if (this.data.interviewState.shouldEnd) {
       this.transition("ENDING");
-      this.emit({ type: "INTERVIEW_ENDED" });
+      this.emit({
+        type: "INTERVIEW_ENDED",
+        score: this.finalScore,
+        interviewId: this.interviewId,
+      });
       return;
     }
     this.data.partialTranscript = "";
@@ -168,7 +175,11 @@ export class InterviewSession {
     this.data.abortLlm?.abort();
     this.data.abortTts?.abort();
     this.transition("ENDING");
-    this.emit({ type: "INTERVIEW_ENDED" });
+    this.emit({
+      type: "INTERVIEW_ENDED",
+      score: this.finalScore,
+      interviewId: this.interviewId,
+    });
   }
 
   emitAssistantText(text: string): void {

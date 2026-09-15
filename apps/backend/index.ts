@@ -6,12 +6,11 @@ import { extractResumeText } from "./services/resume-text";
 import { parseResumeWithLLM } from "./services/resume-parse-llm";
 import { CandidateProfile } from "./types";
 import { prisma } from "./db";
-import { createInitialState} from "./interview-engine/state"
+import { createInitialState, normalizeInterviewState} from "./interview-engine/state"
 import { generateTurn } from "./interview-engine/generate-turn"
 import type { InterviewState } from "./interview-engine/type"
 import { synthesizeSpeech } from "./services/tts-deepgram";
 import { transcribeAudio } from "./services/asr-deepgram"
-import e from "express";
 import { attachVoiceGateway } from "./voice/gateway";
 
 
@@ -140,7 +139,7 @@ app.post("/api/v1/interview/:id/voice-turn",upload.single("audio"), async (req, 
       orderBy: { version: "desc" },
     });
     const state = latestSnapshot
-      ? (latestSnapshot.state as InterviewState)
+      ? normalizeInterviewState(latestSnapshot.state as InterviewState)
       : createInitialState(profile);
     const recentMessages = interview.conversation.slice(-6).map((m) => ({
       role: (m.type === "USER" ? "user" : "assistant") as "user" | "assistant",
@@ -185,7 +184,7 @@ app.post("/api/v1/interview/:id/voice-turn",upload.single("audio"), async (req, 
     if (result.nextState.shouldEnd) {
       await prisma.interview.update({
         where: { id: interviewId },
-        data: { status: "Done" },
+        data: { status: "Done", score: result.score },
       });
     }
 
@@ -193,6 +192,8 @@ app.post("/api/v1/interview/:id/voice-turn",upload.single("audio"), async (req, 
     res.setHeader("Content-Type", "audio/mpeg");
     res.setHeader("X-Transcript", encodeURIComponent(transcript));
     res.setHeader("X-Spoken-Response", encodeURIComponent(result.spoken_response));
+    res.setHeader("X-Score", String(result.score));
+    res.setHeader("X-Should-End", result.nextState.shouldEnd ? "1" : "0");
     res.send(audio);
     
 
@@ -240,8 +241,83 @@ app.post("/api/v1/asr", upload.single("audio"), async (req, res) => {
   }
 });
 
+function profileName(profile: unknown): string {
+  if (profile && typeof profile === "object" && "name" in profile) {
+    const name = (profile as { name?: unknown }).name;
+    if (typeof name === "string" && name.trim()) return name;
+  }
+  return "Unknown";
+}
 
+app.get("/api/v1/interviews", async (_req, res) => {
+  try {
+    const interviews = await prisma.interview.findMany({
+      orderBy: { id: "desc" },
+      take: 100,
+    });
 
+    res.json({
+      interviews: interviews.map((row) => ({
+        id: row.id,
+        status: row.status,
+        score: row.score,
+        linkedinUrl: row.linkedinUrl,
+        candidateName: profileName(row.profile),
+      })),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Failed to list interviews" });
+  }
+});
+
+app.get("/api/v1/interviews/:id", async (req, res) => {
+  try {
+    const interviewId = String(req.params.id);
+    const interview = await prisma.interview.findUnique({
+      where: { id: interviewId },
+      include: {
+        conversation: { orderBy: { createdAt: "asc" } },
+      },
+    });
+
+    if (!interview) {
+      res.status(404).json({ message: "Interview not found" });
+      return;
+    }
+
+    const latestSnapshot = await prisma.interviewStateSnapshot.findFirst({
+      where: { interviewId },
+      orderBy: { version: "desc" },
+    });
+
+    const state = latestSnapshot
+      ? normalizeInterviewState(latestSnapshot.state as InterviewState)
+      : null;
+
+    res.json({
+      id: interview.id,
+      status: interview.status,
+      score: interview.score,
+      linkedinUrl: interview.linkedinUrl,
+      profile: interview.profile,
+      candidateName: profileName(interview.profile),
+      conversation: interview.conversation.map((m) => ({
+        id: m.id,
+        type: m.type,
+        message: m.message,
+        confidence: m.confidence,
+        metadata: m.metadata,
+        createdAt: m.createdAt,
+      })),
+      state,
+      competencies: state?.competencies ?? [],
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Failed to load interview" });
+  }
+});
 
 const server = app.listen(3001, () => {
   console.log("API on http://localhost:3001");

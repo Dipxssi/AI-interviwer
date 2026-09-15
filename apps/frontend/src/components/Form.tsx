@@ -66,6 +66,11 @@ export function Form() {
             <div className="flex justify-center">
                 <Button onClick={onSubmit} disabled={isLoading}>{isLoading ? "Submitting..." : "Start Interview"}   {isLoading && <Loader2 className="w-4 h-4 ml-2 animate-spin" />}</Button>
             </div>
+            <p className="mt-6 text-center text-sm text-muted-foreground">
+              <a href="/reviews" className="underline">
+                Supervisor reviews
+              </a>
+            </p>
         </div >
     </div >
 }

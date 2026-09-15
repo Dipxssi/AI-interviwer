@@ -2,7 +2,7 @@ import type { Server } from "http";
 import { WebSocketServer, type WebSocket } from "ws";
 import { prisma } from "../db";
 import { CandidateProfile } from "../types";
-import { createInitialState } from "../interview-engine/state";
+import { createInitialState, normalizeInterviewState } from "../interview-engine/state";
 import type { InterviewState } from "../interview-engine/type";
 import { InterviewSession } from "./session";
 import type { ClientVoiceMessage, VoiceEvent } from "./types";
@@ -34,7 +34,7 @@ async function loadOrCreateInterviewState(
   });
 
   return latestSnapshot
-    ? (latestSnapshot.state as InterviewState)
+    ? normalizeInterviewState(latestSnapshot.state as InterviewState)
     : createInitialState(profile);
 }
 
@@ -117,11 +117,12 @@ export function attachVoiceGateway(server: Server): void {
           const trimmed = text.trim();
           if (trimmed.length < 3) return;
 
-          // Recover if a previous turn died mid-flight
+          // Recover if a previous turn died mid-flight (not the opening turn).
           if (
             (session.state === "PROCESSING" ||
               session.state === "AI_SPEAKING") &&
-            !turnInFlight.has(interviewId)
+            !turnInFlight.has(interviewId) &&
+            !openingTurnInFlight.has(interviewId)
           ) {
             session.transition("LISTENING");
           }
@@ -133,8 +134,11 @@ export function attachVoiceGateway(server: Server): void {
             return;
           }
 
-          if (turnInFlight.has(interviewId)) return;
+          if (turnInFlight.has(interviewId) || openingTurnInFlight.has(interviewId)) {
+            return;
+          }
           turnInFlight.add(interviewId);
+          asr?.resetUtterance();
 
           session.onFinalTranscript(trimmed);
 
@@ -182,8 +186,10 @@ export function attachVoiceGateway(server: Server): void {
           });
           if (priorCount > 0) return;
           if (openingTurnInFlight.has(interviewId)) return;
+          if (turnInFlight.has(interviewId)) return;
 
           openingTurnInFlight.add(interviewId);
+          turnInFlight.add(interviewId);
 
           session.transition("PROCESSING");
           await runInterviewTurn({
@@ -202,6 +208,7 @@ export function attachVoiceGateway(server: Server): void {
           session.transition("LISTENING");
         } finally {
           openingTurnInFlight.delete(interviewId);
+          turnInFlight.delete(interviewId);
         }
       })();
 
@@ -220,11 +227,13 @@ export function attachVoiceGateway(server: Server): void {
           const parsed: unknown = JSON.parse(data.toString("utf8"));
           if (isClientVoiceMessage(parsed)) {
             if (parsed.type === "AUDIO_PLAYBACK_DONE") {
+              asr?.resetUtterance();
               session.onPlaybackFinished();
               return;
             }
             if (parsed.type === "BARGE_IN") {
               turnInFlight.delete(interviewId);
+              asr?.resetUtterance();
             }
             session.handleClientMessage(parsed);
             return;

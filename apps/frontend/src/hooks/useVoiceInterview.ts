@@ -18,7 +18,7 @@ type ServerEvent =
   | { type: "LLM_TEXT_DELTA"; text: string }
   | { type: "TTS_AUDIO_START"; sequence: number; mimeType: string }
   | { type: "ASSISTANT_FINISHED" }
-  | { type: "INTERVIEW_ENDED" }
+  | { type: "INTERVIEW_ENDED"; score?: number; interviewId?: string }
   | { type: "ERROR"; message: string }
   | { type: "CANDIDATE_INTERRUPTED" };
 
@@ -70,6 +70,8 @@ export function useVoiceInterview(interviewId: string | null) {
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState("Starting…");
   const [micActive, setMicActive] = useState(false);
+  const [score, setScore] = useState<number | null>(null);
+  const [ended, setEnded] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -87,10 +89,57 @@ export function useVoiceInterview(interviewId: string | null) {
   const speechMsRef = useRef(0);
   const bargeSentRef = useRef(false);
   const playbackAbortedRef = useRef(false);
+  /** Ignore mic briefly after AI finishes so speaker echo isn't transcribed as you. */
+  const micMuteUntilRef = useRef(0);
+  const playbackDoneSentRef = useRef(false);
+  const aiSpeakingWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const assistantFinishedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
 
   function setState(next: VoiceState) {
     voiceStateRef.current = next;
     setVoiceState(next);
+  }
+
+  function clearAiSpeakingWatchdog() {
+    if (aiSpeakingWatchdogRef.current) {
+      clearTimeout(aiSpeakingWatchdogRef.current);
+      aiSpeakingWatchdogRef.current = null;
+    }
+  }
+
+  function signalPlaybackDone() {
+    if (playbackDoneSentRef.current) return;
+    if (wsRef.current?.readyState !== WebSocket.OPEN) return;
+    if (voiceStateRef.current === "ENDING") return;
+
+    playbackDoneSentRef.current = true;
+    clearAiSpeakingWatchdog();
+    wsRef.current.send(JSON.stringify({ type: "AUDIO_PLAYBACK_DONE" }));
+
+    // Optimistic local recovery if server ack is slow / missed.
+    if (
+      voiceStateRef.current === "AI_SPEAKING" ||
+      voiceStateRef.current === "PROCESSING"
+    ) {
+      setState("LISTENING");
+      setStatus("Your turn — speak naturally");
+      bargeSentRef.current = false;
+      micMuteUntilRef.current = Date.now() + 1200;
+    }
+  }
+
+  function armAiSpeakingWatchdog() {
+    clearAiSpeakingWatchdog();
+    aiSpeakingWatchdogRef.current = setTimeout(() => {
+      console.warn("[voice] AI speaking watchdog — forcing turn handoff");
+      stopPlayback();
+      playbackAbortedRef.current = false;
+      signalPlaybackDone();
+    }, 45000);
   }
 
   function stopPlayback() {
@@ -136,8 +185,8 @@ export function useVoiceInterview(interviewId: string | null) {
     }
   }
 
-  async function playOneMp3(bytes: ArrayBuffer): Promise<void> {
-    if (playbackAbortedRef.current) return;
+  async function playOneMp3(bytes: ArrayBuffer): Promise<boolean> {
+    if (playbackAbortedRef.current) return false;
 
     const blob = new Blob([bytes], { type: audioMimeRef.current });
     const url = URL.createObjectURL(blob);
@@ -148,58 +197,77 @@ export function useVoiceInterview(interviewId: string | null) {
 
     setState("AI_SPEAKING");
     setStatus("Interviewer speaking…");
+    armAiSpeakingWatchdog();
+
+    // ~16KB/s rough MP3 floor; never hang forever if onended never fires.
+    const maxMs = Math.min(60000, Math.max(10000, bytes.byteLength / 2));
 
     try {
       await new Promise<void>((resolve, reject) => {
-        audio.onended = () => {
+        const timer = setTimeout(() => {
+          reject(new Error("Audio playback timeout"));
+        }, maxMs);
+
+        const finish = () => {
+          clearTimeout(timer);
           URL.revokeObjectURL(url);
           if (currentObjectUrlRef.current === url) {
             currentObjectUrlRef.current = null;
           }
           currentAudioRef.current = null;
+        };
+
+        audio.onended = () => {
+          finish();
           resolve();
         };
         audio.onerror = () => {
-          URL.revokeObjectURL(url);
-          if (currentObjectUrlRef.current === url) {
-            currentObjectUrlRef.current = null;
-          }
-          currentAudioRef.current = null;
+          finish();
           reject(new Error("Audio playback failed"));
         };
-        void audio.play().catch(reject);
+        void audio.play().catch((err) => {
+          finish();
+          reject(err);
+        });
       });
+      return true;
     } catch {
       if (!playbackAbortedRef.current) {
         setError("Audio blocked — click anywhere on the page, then refresh");
       }
+      try {
+        audio.pause();
+        audio.src = "";
+      } catch {
+        // ignore
+      }
+      return false;
     }
   }
 
   async function drainAudioQueue(): Promise<void> {
     if (isPlayingRef.current) return;
     isPlayingRef.current = true;
+    let attempted = 0;
 
     while (audioQueueRef.current.length > 0) {
       if (playbackAbortedRef.current) break;
       const bytes = audioQueueRef.current.shift()!;
+      attempted += 1;
       await playOneMp3(bytes);
       if (playbackAbortedRef.current) break;
     }
 
     isPlayingRef.current = false;
 
-    if (
-      !playbackAbortedRef.current &&
-      wsRef.current?.readyState === WebSocket.OPEN &&
-      voiceStateRef.current !== "ENDING"
-    ) {
-      wsRef.current.send(JSON.stringify({ type: "AUDIO_PLAYBACK_DONE" }));
+    if (attempted > 0 && !playbackAbortedRef.current) {
+      signalPlaybackDone();
     }
   }
 
   function enqueueMp3(bytes: ArrayBuffer) {
     if (playbackAbortedRef.current) return;
+    if (bytes.byteLength === 0) return;
     audioQueueRef.current.push(bytes);
     void drainAudioQueue();
   }
@@ -221,8 +289,14 @@ export function useVoiceInterview(interviewId: string | null) {
           if (event.state === "LISTENING") {
             setStatus("Your turn — speak naturally");
             bargeSentRef.current = false;
+            clearAiSpeakingWatchdog();
+            // Hangover mute: leftover TTS in the room must not become "your" answer.
+            micMuteUntilRef.current = Date.now() + 1200;
           }
-          if (event.state === "AI_SPEAKING") setStatus("Interviewer speaking…");
+          if (event.state === "AI_SPEAKING") {
+            setStatus("Interviewer speaking…");
+            armAiSpeakingWatchdog();
+          }
           if (event.state === "PROCESSING") setStatus("Thinking…");
           if (event.state === "CANDIDATE_SPEAKING") setStatus("Listening to you…");
           break;
@@ -239,9 +313,26 @@ export function useVoiceInterview(interviewId: string | null) {
         case "TTS_AUDIO_START":
           audioMimeRef.current = event.mimeType || "audio/mpeg";
           playbackAbortedRef.current = false;
+          playbackDoneSentRef.current = false;
+          break;
+        case "ASSISTANT_FINISHED":
+          // TTS finished sending. If no/late audio, don't stay stuck forever.
+          if (assistantFinishedTimerRef.current) {
+            clearTimeout(assistantFinishedTimerRef.current);
+          }
+          assistantFinishedTimerRef.current = setTimeout(() => {
+            if (
+              !isPlayingRef.current &&
+              audioQueueRef.current.length === 0 &&
+              !playbackDoneSentRef.current
+            ) {
+              signalPlaybackDone();
+            }
+          }, 500);
           break;
         case "CANDIDATE_INTERRUPTED":
           stopPlayback();
+          clearAiSpeakingWatchdog();
           setAssistantText("");
           setState("CANDIDATE_SPEAKING");
           setStatus("Go ahead…");
@@ -249,6 +340,10 @@ export function useVoiceInterview(interviewId: string | null) {
         case "INTERVIEW_ENDED":
           setState("ENDING");
           setStatus("Interview ended");
+          if (typeof event.score === "number") {
+            setScore(event.score);
+          }
+          setEnded(true);
           cleanup();
           break;
         case "ERROR":
@@ -293,20 +388,22 @@ export function useVoiceInterview(interviewId: string | null) {
 
         const input = e.inputBuffer.getChannelData(0);
         const state = voiceStateRef.current;
+        const aiTurn = state === "AI_SPEAKING" || state === "PROCESSING";
 
-        if (state === "AI_SPEAKING" || state === "PROCESSING") {
+        if (aiTurn) {
           let sum = 0;
           for (let i = 0; i < input.length; i++) sum += input[i]! * input[i]!;
           const rms = Math.sqrt(sum / input.length);
           const frameMs = (input.length / ctx.sampleRate) * 1000;
 
-          if (rms > 0.02) {
+          // Higher threshold + longer hold so speaker echo doesn't barge-in.
+          if (rms > 0.045) {
             speechMsRef.current += frameMs;
           } else {
             speechMsRef.current = 0;
           }
 
-          if (speechMsRef.current >= 180 && !bargeSentRef.current) {
+          if (speechMsRef.current >= 400 && !bargeSentRef.current) {
             bargeSentRef.current = true;
             stopPlayback();
             setAssistantText("");
@@ -314,9 +411,18 @@ export function useVoiceInterview(interviewId: string | null) {
             setStatus("Go ahead…");
             socket.send(JSON.stringify({ type: "BARGE_IN" }));
           }
-        } else {
-          speechMsRef.current = 0;
-          bargeSentRef.current = false;
+
+          // Do not stream mic to ASR while AI is talking — echo keeps
+          // Deepgram "hot" so speech_final never fires and turns stall.
+          return;
+        }
+
+        speechMsRef.current = 0;
+        bargeSentRef.current = false;
+
+        // Post-AI echo window — do not stream to ASR yet.
+        if (Date.now() < micMuteUntilRef.current) {
+          return;
         }
 
         const pcm16k = downsampleTo16k(input, ctx.sampleRate);
@@ -382,6 +488,10 @@ export function useVoiceInterview(interviewId: string | null) {
 
     return () => {
       cancelled = true;
+      clearAiSpeakingWatchdog();
+      if (assistantFinishedTimerRef.current) {
+        clearTimeout(assistantFinishedTimerRef.current);
+      }
       cleanup();
     };
   }, [interviewId]);
@@ -394,5 +504,7 @@ export function useVoiceInterview(interviewId: string | null) {
     error,
     status,
     micActive,
+    score,
+    ended,
   };
 }

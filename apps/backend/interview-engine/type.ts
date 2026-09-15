@@ -15,9 +15,11 @@ export type CompetencyKey =
 
 export type CompetencyState = {
   key: CompetencyKey;
-  importance: number; 
-  confidence: number; 
+  importance: number;
+  confidence: number;
   followUpNeeded: boolean;
+  /** How many follow-up questions already asked on this competency. */
+  followUpCount: number;
   evidence: Array<{
     claim: string;
     supportingQuote: string;
@@ -33,6 +35,8 @@ export type InterviewState = {
   coveredTopics: string[];
   turnCount: number;
   shouldEnd: boolean;
+  /** Last competency the interviewer dug into (for rotation). */
+  lastCompetency?: CompetencyKey;
 };
 
 export type InterviewDecision = {
@@ -46,3 +50,6 @@ export type LlmTurnResult = {
   spoken_response: string;
   decision: InterviewDecision;
 };
+
+/** Max follow-ups allowed on a single competency before we must move on. */
+export const MAX_FOLLOWUPS_PER_COMPETENCY = 1;

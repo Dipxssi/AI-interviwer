@@ -1,19 +1,29 @@
-# AI Interviewer
+# Voice Interviewer
 
-A **Mercor-style live voice interview MVP**. Candidates upload a resume, link GitHub and LinkedIn, and complete a **zero-click voice interview** — the AI speaks first, listens continuously, and asks follow-up questions based on their profile.
+Live voice interviews: Deepgram ASR → Groq interviewer → Deepgram TTS.
 
-Built as a **cascaded voice pipeline** (streaming ASR → Groq interviewer → TTS), not end-to-end speech-to-speech.
+## Run
 
-## Features
+```bash
+# backend
+cd apps/backend && bun index.ts
 
-- **Profile intake** — resume PDF/DOCX parsing, GitHub repo enrichment, structured candidate profile
-- **Live voice interview** — WebSocket session with binary PCM up and MP3 down
-- **AI speaks first** — opening greeting + first question on connect
-- **Streaming ASR** — Deepgram live transcription with partial + final transcripts
-- **Structured interviewer** — Groq LLM with interview state machine, competency tracking, end-of-interview rules
-- **Chunked TTS** — sentence-level synthesis for faster time-to-first-audio
-- **Barge-in** — interrupt the interviewer mid-sentence (client VAD + server cancel)
-- **Session FSM** — `IDLE` → `LISTENING` → `CANDIDATE_SPEAKING` → `PROCESSING` → `AI_SPEAKING`
-- **Persistence** — Postgres messages, interview state snapshots, realtime latency events
-- **UI** — vibrating speaker avatars, live transcripts, interview end screen
+# frontend
+cd apps/frontend && bun run dev
+```
 
+- Candidate intake: http://localhost:3000
+- Supervisor reviews: http://localhost:3000/reviews
+
+## Flow
+
+1. Candidate submits LinkedIn, GitHub, resume → interview created.
+2. Voice WebSocket session; AI greets and asks questions.
+3. Saying “I’m done” / “end interview” wraps up; natural end when coverage is enough.
+4. Score (0–100) saved; candidate lands on `/result/:id`.
+5. Supervisors open `/reviews` for transcript, competencies, and evidence.
+
+## Voice state machine
+
+`IDLE → LISTENING → CANDIDATE_SPEAKING → PROCESSING → AI_SPEAKING → LISTENING`  
+(or `ENDING` when complete). Barge-in interrupts AI speech.

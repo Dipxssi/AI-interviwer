@@ -39,7 +39,7 @@ export async function runInterviewTurn({
     throw new Error("Interview not found");
   }
 
-  const recentMessages = interview.conversation.slice(-6).map((m) => ({
+  const recentMessages = interview.conversation.slice(-10).map((m) => ({
     role: (m.type === "USER" ? "user" : "assistant") as "user" | "assistant",
     text: m.message,
   }));
@@ -102,10 +102,13 @@ export async function runInterviewTurn({
   }
 
   if (result.nextState.shouldEnd) {
+    session.setFinalScore(result.score);
     await prisma.interview.update({
       where: { id: interviewId },
-      data: { status: "Done" },
+      data: { status: "Done", score: result.score },
     });
+  } else {
+    session.setFinalScore(result.score);
   }
 
   if (signal?.aborted || llmAbort.signal.aborted) {
@@ -113,24 +116,41 @@ export async function runInterviewTurn({
   }
 
   session.setInterviewState(result.nextState);
-  session.transition("AI_SPEAKING");
+  // Keep PROCESSING until first TTS chunk is ready — avoids "speaking" with silence.
+  session.emitAssistantText(result.spoken_response);
 
   const ttsAbort = session.beginTts();
   await logEvent(interviewId, assistantMsg.id, "TTS_STARTED");
   const sentences = splitIntoSentences(result.spoken_response);
   let firstChunk = true;
+  let audioChunks = 0;
 
-  for (const sentence of sentences) {
-    if (ttsAbort.signal.aborted || llmAbort.signal.aborted) return;
-    if (!firstChunk) {
-      session.nextTtsSequence();
+  try {
+    for (const sentence of sentences) {
+      if (ttsAbort.signal.aborted || llmAbort.signal.aborted) break;
+      if (!firstChunk) {
+        session.nextTtsSequence();
+      }
+      const audio = await synthesizeSpeech(sentence);
+      if (ttsAbort.signal.aborted || llmAbort.signal.aborted) break;
+      if (audio.byteLength === 0) continue;
+
+      if (firstChunk) {
+        session.transition("AI_SPEAKING");
+        firstChunk = false;
+      }
+      sendBinary(audio);
+      audioChunks += 1;
     }
-    firstChunk = false;
-    const audio = await synthesizeSpeech(sentence);
-    if (ttsAbort.signal.aborted) return;
-    sendBinary(audio);
+  } catch (err) {
+    console.error("TTS failed", err);
   }
 
-  session.emitAssistantText(result.spoken_response);
   session.onAssistantAudioSent();
+
+  // No playable audio → don't wait forever for AUDIO_PLAYBACK_DONE.
+  if (audioChunks === 0 && !ttsAbort.signal.aborted && !llmAbort.signal.aborted) {
+    session.transition("AI_SPEAKING");
+    session.onPlaybackFinished();
+  }
 }

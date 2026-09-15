@@ -41,11 +41,11 @@ export type VoiceState =
       stopPlaybackImmediately: true,
     },
     endpoint: {
-      minSilenceMs: 400,
-      defaultSilenceMs: 650,
-      maxSilenceMs: 950,
-      incompleteSentenceExtraMs: 250,
-      semanticEndpointEnabled: true, // lightweight rules, not an LLM
+      minSilenceMs: 900,
+      defaultSilenceMs: 1400,
+      maxSilenceMs: 2200,
+      incompleteSentenceExtraMs: 800,
+      semanticEndpointEnabled: true,
     },
     speculation: {
       enabled: false, // turn on only after live MVP is stable
@@ -69,7 +69,7 @@ export type VoiceEvent =
   | { type: "LLM_TEXT_DELTA"; text: string }
   | { type: "TTS_AUDIO_START"; sequence: number; mimeType: string }
   | { type: "ASSISTANT_FINISHED" }
-  | { type: "INTERVIEW_ENDED" }
+  | { type: "INTERVIEW_ENDED"; score: number; interviewId: string }
   | { type: "ERROR"; message: string };
 
 

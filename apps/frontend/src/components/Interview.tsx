@@ -1,7 +1,8 @@
 import { useProfile } from "../context/ProfileContext";
-import { Navigate } from "react-router-dom";
+import { Navigate, useNavigate } from "react-router-dom";
 import { useVoiceInterview } from "@/hooks/useVoiceInterview";
 import { cn } from "@/lib/utils";
+import { useEffect } from "react";
 
 type VoiceAvatarProps = {
   label: string;
@@ -37,11 +38,17 @@ function VoiceAvatar({ label, initials, active, subtitle }: VoiceAvatarProps) {
 export function Interview() {
   const { profile, interviewId } = useProfile();
   const voice = useVoiceInterview(interviewId);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (voice.ended && interviewId) {
+      navigate(`/result/${interviewId}`, { replace: true });
+    }
+  }, [voice.ended, interviewId, navigate]);
 
   if (!profile || !interviewId) return <Navigate to="/" replace />;
 
-  const interviewerSpeaking =
-    voice.voiceState === "AI_SPEAKING" || voice.voiceState === "PROCESSING";
+  const interviewerSpeaking = voice.voiceState === "AI_SPEAKING";
   const candidateSpeaking = voice.voiceState === "CANDIDATE_SPEAKING";
 
   const candidateInitials = profile.name
@@ -56,11 +63,8 @@ export function Interview() {
       <div className="mx-auto flex min-h-screen max-w-2xl flex-col justify-center gap-6 p-8">
         <h1 className="text-3xl font-semibold">Interview complete</h1>
         <p className="text-muted-foreground">
-          Thanks, {profile.name}. Your responses have been saved.
+          Thanks, {profile.name}. Loading your score…
         </p>
-        <a href="/" className="text-sm underline">
-          Back to home
-        </a>
       </div>
     );
   }
