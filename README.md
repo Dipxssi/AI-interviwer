@@ -51,11 +51,12 @@ Free Render web services spin down when idle; the first request (and WebSocket) 
 
 ### 2. Frontend on Vercel
 
-1. Import the same repo in Vercel.
-2. Leave Root Directory as the repo root (uses [`vercel.json`](vercel.json)).
+1. Import the same repo in Vercel as a **single** project (not multi-service).
+2. Set **Root Directory** to `apps/frontend` (uses [`apps/frontend/vercel.json`](apps/frontend/vercel.json)).
 3. Set build env:
-   - `PUBLIC_BACKEND_URL` = Render HTTPS URL (no trailing slash)
-4. Deploy. Client routes (`/reviews`, `/result/:id`) are rewritten to `index.html`.
+   - `PUBLIC_BACKEND_URL` = Render HTTPS URL (no trailing slash), e.g. `https://interviwer-api.onrender.com`
+4. If Build Command is overridden in the dashboard, use `bun run build` and Output Directory `dist`.
+5. Deploy. Client routes (`/reviews`, `/result/:id`) are rewritten to `index.html`.
 
 ### 3. Wire CORS
 
