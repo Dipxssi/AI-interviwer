@@ -22,9 +22,21 @@ const upload = multer({
 });
 
 app.use(express.json());
-app.use(cors({
-  origin: "http://localhost:3000",
-}));
+
+const frontendOrigins = (process.env.FRONTEND_URL ?? "http://localhost:3000")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+app.use(
+  cors({
+    origin: frontendOrigins.length === 1 ? frontendOrigins[0] : frontendOrigins,
+  }),
+);
+
+app.get("/health", (_req, res) => {
+  res.json({ ok: true });
+});
 
 app.post("/api/v1/pre-interview", upload.single("resume"), async (req, res) => {
   try {
@@ -319,7 +331,8 @@ app.get("/api/v1/interviews/:id", async (req, res) => {
   }
 });
 
-const server = app.listen(3001, () => {
-  console.log("API on http://localhost:3001");
+const port = Number(process.env.PORT) || 3001;
+const server = app.listen(port, "0.0.0.0", () => {
+  console.log(`API on http://0.0.0.0:${port}`);
 });
 attachVoiceGateway(server);

@@ -3,6 +3,13 @@
   "module": "index.ts",
   "type": "module",
   "private": true,
+  "scripts": {
+    "build": "bunx prisma generate",
+    "migrate": "bunx prisma migrate deploy",
+    "start": "bun index.ts",
+    "start:prod": "bunx prisma migrate deploy && bun index.ts",
+    "dev": "bun index.ts"
+  },
   "devDependencies": {
     "@types/bun": "latest",
     "@types/cors": "^2.8.19",

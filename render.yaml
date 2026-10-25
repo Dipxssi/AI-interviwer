@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: interviwer-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: interviwer-db
+          property: connectionString
+      - key: FRONTEND_URL
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: DEEPGRAM_API_KEY
+        sync: false
+      - key: NODE_ENV
+        value: production
+
+databases:
+  - name: interviwer-db
+    plan: free
+    databaseName: interviwer
+    user: interviwer
